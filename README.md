@@ -7,7 +7,14 @@ A powerful and flexible CLI tool and Python module to bulk download pages from t
 
 This tool is designed for efficiency and politeness, incorporating features like concurrent downloads, rate limiting, automatic retries, and detailed logging. It can be used directly from the command line for archival tasks or imported into your own Python projects for programmatic access.
 
+## Table of Contents
 
+-   [Key Features](#key-features)
+-   [Installation](#installation)
+-   [Usage (Command-Line)](#usage-command-line)
+-   [Usage (as a Python Module)](#usage-as-a-python-module)
+-   [Command-Line Options](#command-line-options)
+-   [API Reference](#api-reference)
 
 ---
 
@@ -26,7 +33,7 @@ This tool is designed for efficiency and politeness, incorporating features like
 -   **Specific Timestamps:** Fetch the latest available version of a page or specify a precise timestamp (e.g., `20150101`) for point-in-time recovery.
 -   **Dual Use:**
     -   A full-featured command-line interface (CLI) for direct use.
-    -   An importable Python module (`WaybackDownloader` class) for integration into other scripts.
+    -   An importable Python module (`WaybackDownloader` class) with a simple API and built-in progress logging.
 
 ## Installation
 
@@ -117,23 +124,24 @@ python3 wayback_bulk_downloader.py \
 
 You can import the `WaybackDownloader` class to integrate it into your own projects.
 
-### Example 1: Download from a Python List
+### Example 1: Download with CLI-style Progress
+
+The easiest way to get started. Simply instantiate the downloader with `show_progress=True` to get real-time console feedback, just like the command-line tool.
 
 ```python
 from wayback_bulk_downloader import WaybackDownloader
 
-# 1. Configure the downloader
+# Enable CLI-style progress logging with `show_progress=True`
 downloader = WaybackDownloader(
     output_dir="my_archive",
     threads=4,
-    skip_existing=True
+    show_progress=True
 )
 
-# 2. Provide a list of URLs and run the job
 urls = ["https://example.com", "https://wikipedia.org"]
 results = downloader.download_from_list(urls)
 
-print(f"Job finished: {results}")
+print(f"\nJob finished: {results}")
 # Output: Job finished: {'success': 2, 'failed': 0, 'skipped': 0, 'total': 2}
 ```
 
@@ -142,7 +150,8 @@ print(f"Job finished: {results}")
 ```python
 from wayback_bulk_downloader import WaybackDownloader
 
-downloader = WaybackDownloader(output_dir="comics")
+# We'll enable progress logging here too.
+downloader = WaybackDownloader(output_dir="comics", show_progress=True)
 
 template = "https://xkcd.com/{}/"
 comic_ids = [1, 100, 242, 327] # Can be strings or numbers
@@ -151,12 +160,12 @@ comic_ids = [1, 100, 242, 327] # Can be strings or numbers
 # Results will be saved in "comics/xkcd.com_"
 results = downloader.download_from_template(template, comic_ids)
 
-print(f"Template job finished: {results}")
+print(f"\nTemplate job finished: {results}")
 ```
 
-### Example 3: Using a Progress Callback
+### Example 3: Using a Custom Progress Callback
 
-For real-time feedback in your application, provide an `on_progress` callback function.
+For more advanced control (e.g., updating a GUI, writing to a database), provide a custom `on_progress` callback function. This will override the default `show_progress` behavior.
 
 ```python
 from wayback_bulk_downloader import WaybackDownloader
@@ -192,7 +201,146 @@ downloader.download_from_list(urls, on_progress=my_progress_handler)
 | `--skip-existing`  |       | Skip downloading if the output file already exists.                                                     | `False`                  |
 | `--log`            |       | Path to a CSV file to log all download attempts.                                                        | `None`                   |
 | `--verbose`        | `-v`  | Enable verbose output for debugging.                                                                    | `False`                  |
-| `--user-agent`     |       | Custom User-Agent string for requests.                                                                  | `WaybackBulkDownloader/2.6` |
+| `--silent`         |       | Suppress real-time console progress updates.                                                            | `False`                  |
+| `--user-agent`     |       | Custom User-Agent string for requests.                                                                  | `WaybackBulkDownloader/2.7` |
+
+
+
+
+
+
+
+## API Reference
+
+This section provides a detailed reference for developers who want to use `wayback-bulk-downloader` as a Python module.
+
+### `class WaybackDownloader`
+
+The main class for managing and executing download jobs. You should create an instance of this class with your desired configuration before starting a download.
+
+---
+
+#### `__init__(...)`
+
+Initializes the `WaybackDownloader`.
+
+```python
+downloader = WaybackDownloader(
+    output_dir="wayback_downloads",
+    threads=1,
+    delay=1.0,
+    retries=3,
+    skip_existing=False,
+    user_agent="WaybackBulkDownloader/2.7 ...",
+    log_file=None,
+    verbose=False,
+    timestamp=None,
+    show_progress=False
+)
+```
+
+**Parameters:**
+
+| Parameter       | Type                | Description                                                                                             | Default                  |
+| --------------- | ------------------- | ------------------------------------------------------------------------------------------------------- | ------------------------ |
+| `output_dir`    | `str`               | The root directory where downloaded files will be saved.                                                | `"wayback_downloads"`    |
+| `threads`       | `int`               | The number of concurrent download threads to use.                                                       | `1`                      |
+| `delay`         | `float`             | The minimum delay in seconds between requests across all threads.                                         | `1.0`                    |
+| `retries`       | `int`               | The number of times to retry a download if a rate-limit error (HTTP 429) is encountered.                | `3`                      |
+| `skip_existing` | `bool`              | If `True`, the downloader will skip any URL whose output file already exists.                             | `False`                  |
+| `user_agent`    | `str`               | The User-Agent string to use for all HTTP requests.                                                     | `WaybackBulkDownloader/2.7...` |
+| `log_file`      | `str`, `optional`   | If provided, the path to a CSV file where all download attempts will be logged.                         | `None`                   |
+| `verbose`       | `bool`              | If `True`, enables verbose internal logging, useful for debugging.                                      | `False`                  |
+| `timestamp`     | `str`, `optional`   | The Wayback Machine timestamp to use (e.g., `"20150101"`). If `None`, the latest version is fetched.       | `None`                   |
+| `show_progress` | `bool`              | If `True`, prints real-time, CLI-style progress updates to the console. A custom `on_progress` callback will override this. | `False`                  |
+
+---
+
+#### `download_from_list(...)`
+
+Downloads a collection of URLs from a Python list.
+
+**Parameters:**
+
+-   `url_list` (`list[str]`): A list of URL strings to download.
+-   `on_progress` (`callable`, `optional`): A function to call after each URL is processed. See [The `on_progress` Callback](#the-on_progress-callback) section for details.
+
+**Returns:**
+
+-   `(dict)`: A dictionary summarizing the results of the job.
+
+---
+
+#### `download_from_template(...)`
+
+Downloads a collection of URLs built from a template string and a list of parameters. The files are saved in a subdirectory named after the template.
+
+**Parameters:**
+
+-   `template_url` (`str`): A URL string containing a single placeholder `{}`.
+-   `params_list` (`list[str | int]`): A list of strings or numbers to be inserted into the template's placeholder.
+-   `on_progress` (`callable`, `optional`): A function to call after each URL is processed.
+
+**Returns:**
+
+-   `(dict)`: A dictionary summarizing the results of the job.
+
+---
+
+#### `download_url(...)`
+
+A convenience method for downloading a single URL.
+
+**Parameters:**
+
+-   `url` (`str`): The single URL to download.
+-   `on_progress` (`callable`, `optional`): A function to call after the URL is processed.
+
+**Returns:**
+
+-   `(dict)`: A dictionary summarizing the results of the job.
+
+---
+
+#### The `on_progress` Callback
+
+When you provide a callable function to the `on_progress` parameter of a download method, that function will be executed after each URL is processed. It receives a single argument: a dictionary containing detailed information about the attempt.
+
+**Callback Function Signature:**
+
+```python
+def my_handler(result: dict):
+    # Your logic here
+    pass
+```
+
+**The `result` Dictionary Structure:**
+
+| Key                 | Type     | Description                                                                     |
+| ------------------- | -------- | ------------------------------------------------------------------------------- |
+| `timestamp_utc`     | `str`    | The ISO 8601 timestamp (in UTC) of when the download attempt finished.            |
+| `original_url`      | `str`    | The URL that was originally requested.                                          |
+| `final_url`         | `str`    | The actual snapshot URL after any redirects. Empty on failure.                  |
+| `status`            | `str`    | The outcome of the attempt. Can be `SUCCESS`, `FAIL`, or `SKIPPED`.             |
+| `save_path`         | `str`    | The local filesystem path where the file was (or would have been) saved.        |
+| `error_message`     | `str`    | A description of the error if the status was `FAIL`. Empty on success.          |
+
+---
+
+### Functions
+
+#### `sanitize_filename(url_or_string)`
+
+A standalone helper function to convert a string (like a URL) into a safe string that can be used as part of a filename.
+
+**Parameters:**
+
+-   `url_or_string` (`str`): The input string to sanitize.
+
+**Returns:**
+
+-   `(str)`: A filesystem-safe string.
+
 
 ## Contributing
 

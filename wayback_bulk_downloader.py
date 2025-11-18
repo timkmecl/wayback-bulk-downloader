@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Wayback Machine Bulk Downloader (v2.6)
+Wayback Machine Bulk Downloader (v2.7)
 
 A powerful CLI tool and importable Python module to bulk download pages
 from the Internet Archive's Wayback Machine.
@@ -9,11 +9,11 @@ from the Internet Archive's Wayback Machine.
 
   from wayback_bulk_downloader import WaybackDownloader
 
-  # --- Example 1: Download a list of URLs ---
-  downloader = WaybackDownloader(output_dir="my_archive", threads=4)
+  # --- Example 1: Download a list with console progress (like the CLI) ---
+  downloader = WaybackDownloader(output_dir="my_archive", threads=4, show_progress=True)
   urls = ["https://example.com", "https://wikipedia.org"]
   results = downloader.download_from_list(urls)
-  print(f"List download finished: {results}")
+  print(f"Job finished: {results}")
 
   # --- Example 2: Download using a template ---
   template = "https://www.erowid.org/experiences/exp.php?ID={}"
@@ -37,12 +37,12 @@ DEFAULT_OUTPUT_DIR = "wayback_downloads"
 DEFAULT_THREADS = 1
 DEFAULT_RETRIES = 3
 DEFAULT_DELAY = 1.0
-DEFAULT_USER_AGENT = "WaybackBulkDownloader/2.6 (Python/Requests; +https://github.com/)"
+DEFAULT_USER_AGENT = "WaybackBulkDownloader/2.7 (Python/Requests; +https://github.com/)"
 
 
 def sanitize_filename(url_or_string):
     """Converts a string (URL or other) into a safe filename component."""
-    s = str(url_or_string) # Ensure it's a string
+    s = str(url_or_string)
     if s.endswith('/'): s = s[:-1]
     s = re.sub(r'^https?:\/\/', '', s)
     s = re.sub(r'[\\/:*?"<>|]', '_', s)
@@ -58,7 +58,7 @@ class WaybackDownloader:
     def __init__(self, output_dir=DEFAULT_OUTPUT_DIR, threads=DEFAULT_THREADS,
                  delay=DEFAULT_DELAY, retries=DEFAULT_RETRIES,
                  skip_existing=False, user_agent=DEFAULT_USER_AGENT,
-                 log_file=None, verbose=False, timestamp=None):
+                 log_file=None, verbose=False, timestamp=None, show_progress=False):
         self.output_dir = output_dir
         self.threads = threads
         self.delay = delay
@@ -68,6 +68,7 @@ class WaybackDownloader:
         self.log_file = log_file
         self.verbose = verbose
         self.timestamp = timestamp
+        self.show_progress = show_progress
         self.session = requests.Session()
         self.session.headers.update({'User-Agent': self.user_agent})
         # Internal state reset for each job
@@ -119,11 +120,10 @@ class WaybackDownloader:
         jobs = []
         subdir_name = sanitize_filename(template_url.replace('{}', ''))
         job_output_dir = os.path.join(self.output_dir, subdir_name)
-        
         for param in params_list:
             param_str = str(param)
             if re.search(r'[\\/:*?"<>|]', param_str):
-                print(f"Warning: Skipping invalid parameter '{param_str}' (contains illegal filename characters).")
+                print(f"Warning: Skipping invalid parameter '{param_str}' (illegal filename characters).")
                 continue
             full_url = template_url.format(param)
             save_path = os.path.join(job_output_dir, f"{param_str}.html")
@@ -135,15 +135,20 @@ class WaybackDownloader:
         output_dir = job_output_dir or self.output_dir
         os.makedirs(output_dir, exist_ok=True)
 
+        # Determine the final callback. User-provided `on_progress` takes precedence.
+        final_progress_callback = on_progress
+        if on_progress is None and self.show_progress:
+            final_progress_callback = self._default_console_handler
+        
         if self.log_file:
             with open(self.log_file, 'w', encoding='utf-8') as lf:
                 lf.write("download_timestamp_utc,original_url,final_url,status,local_path,error_message\n")
-
+        
         for url, path in jobs:
             if self.skip_existing and os.path.exists(path):
                 self.skipped_count += 1
-                if on_progress:
-                    on_progress({
+                if final_progress_callback:
+                    final_progress_callback({
                         'timestamp_utc': datetime.datetime.now(datetime.UTC).isoformat(),
                         'original_url': url, 'final_url': '', 'status': 'SKIPPED',
                         'save_path': path, 'error_message': 'File already exists'
@@ -158,7 +163,7 @@ class WaybackDownloader:
 
         threads = []
         for _ in range(self.threads):
-            thread = threading.Thread(target=self._download_worker, args=(on_progress,))
+            thread = threading.Thread(target=self._download_worker, args=(final_progress_callback,))
             thread.daemon = True; thread.start(); threads.append(thread)
         self.q.join()
         self.session.close()
@@ -169,7 +174,6 @@ class WaybackDownloader:
         }
 
     def _download_worker(self, on_progress):
-        # This method remains the same as v2.5
         while not self.q.empty():
             original_url, save_path = self.q.get()
             if self.delay > 0:
@@ -210,6 +214,12 @@ class WaybackDownloader:
             if self.log_file: self._log_to_file(result_info)
             if on_progress: on_progress(result_info)
             self.q.task_done()
+    
+    def _default_console_handler(self, result):
+        """The default progress handler that mimics the CLI's output."""
+        if result['status'] == 'SUCCESS': print(f"  -> Successfully saved to: {result['save_path']}")
+        elif result['status'] == 'SKIPPED': print(f"  -> Skipping existing file: {result['save_path']}")
+        else: print(f"  -> FAILED to download {result['original_url']} ({result['error_message']})")
 
     def _log_to_file(self, result):
         with self.log_file_lock:
@@ -231,7 +241,7 @@ def main_cli():
         description="A powerful CLI tool to bulk download pages from the Wayback Machine.",
         formatter_class=argparse.RawTextHelpFormatter
     )
-    # ... (argparse setup is unchanged) ...
+    # ...
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("-u", "--url", help="Mode 1: A single URL to download.")
     group.add_argument("-l", "--list", help="Mode 2: Path to a text file with URLs (one per line).")
@@ -245,21 +255,19 @@ def main_cli():
     parser.add_argument("--skip-existing", action='store_true', help="Skip downloading if the output file already exists.")
     parser.add_argument("--log", help="Path to a CSV file to log all download attempts.")
     parser.add_argument("-v", "--verbose", action='store_true', help="Enable verbose output for debugging.")
+    parser.add_argument("--silent", action='store_true', help="Suppress console progress updates. Final summary is still shown.")
     parser.add_argument("--user-agent", default=DEFAULT_USER_AGENT, help="Custom User-Agent string for requests.")
     args = parser.parse_args()
     if (args.template and not args.params) or (not args.template and args.params):
         parser.error("--template and --params must be used together.")
 
-    def cli_progress_handler(result):
-        if result['status'] == 'SUCCESS': print(f"  -> Successfully saved to: {result['save_path']}")
-        elif result['status'] == 'SKIPPED': print(f"  -> Skipping existing file: {result['save_path']}")
-        else: print(f"  -> FAILED to download {result['original_url']} ({result['error_message']})")
-
+    # CLI sets show_progress=True unless --silent is used.
     downloader = WaybackDownloader(
         output_dir=args.output_dir, threads=args.threads, delay=args.delay,
         retries=args.retries, skip_existing=args.skip_existing,
         user_agent=args.user_agent, log_file=args.log,
-        verbose=args.verbose, timestamp=args.timestamp
+        verbose=args.verbose, timestamp=args.timestamp,
+        show_progress=not args.silent
     )
     
     print("--- Wayback Machine Bulk Downloader ---")
@@ -267,18 +275,18 @@ def main_cli():
     results = {}
     if args.url:
         print(f"Mode:                  Single URL: {args.url}")
-        results = downloader.download_url(args.url, on_progress=cli_progress_handler)
+        results = downloader.download_url(args.url)
     elif args.list:
         print(f"Mode:                  URL List: {args.list}")
         try:
             with open(args.list, 'r') as f: urls = [line.strip() for line in f if line.strip()]
-            results = downloader.download_from_list(urls, on_progress=cli_progress_handler)
+            results = downloader.download_from_list(urls)
         except FileNotFoundError: print(f"Error: URL list file not found at '{args.list}'"); sys.exit(1)
     elif args.template and args.params:
         print(f"Mode:                  Template: {args.template}")
         try:
             with open(args.params, 'r') as f: params = [line.strip() for line in f if line.strip()]
-            results = downloader.download_from_template(args.template, params, on_progress=cli_progress_handler)
+            results = downloader.download_from_template(args.template, params)
         except FileNotFoundError: print(f"Error: Parameter file not found at '{args.params}'"); sys.exit(1)
         
     print("\n--- Download Complete ---")
