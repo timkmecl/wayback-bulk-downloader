@@ -35,6 +35,33 @@ This tool is designed for efficiency and politeness, incorporating features like
     -   A full-featured command-line interface (CLI) for direct use.
     -   An importable Python module (`WaybackDownloader` class) with a simple API and built-in progress logging.
 
+<details>
+
+<summary>Technical Note: Polite and Efficient Request Handling</summary>
+
+### Technical Note: Polite and Efficient Request Handling
+
+A primary challenge with any bulk downloading tool is interacting with the target server respectfully to avoid being rate-limited or blocked. This tool employs a key strategy for this, inspired by a common pattern in robust HTTP clients.
+
+**The Problem:** The most naive approach to downloading is to make a brand new network connection for every single URL (e.g., calling `requests.get()` in a loop). For a server, this looks like a rapid flood of new, independent connections, which can easily trigger "Too Many Requests" errors. This process is also highly inefficient due to the overhead of establishing a new TCP and TLS handshake for every file.
+
+**The Solution: Connection Pooling**
+
+The initial implementation was inspired by a pattern seen in a Ruby-based downloader which uses a `Net::HTTP` persistent connection. In this Python tool, the same principle is applied using a `requests.Session()` object.
+
+The `Session` object maintains a pool of underlying TCP connections. When making multiple requests to the same host (`web.archive.org`), the session reuses an existing, open connection instead of creating a new one.
+
+This provides two major benefits:
+
+1.  **Reduced Overhead:** By skipping the repeated connection handshakes, the total time spent on network negotiation is drastically reduced, making the download process faster.
+2.  **Server-Friendliness:** From the server's perspective, a stream of requests over a single, persistent connection looks like a single, well-behaved client. This is far less likely to trigger connection-based rate limiting than a storm of new connections. The session also efficiently persists headers, like our custom `User-Agent`, across all requests.
+
+This connection pooling strategy, combined with the explicit `--delay` between requests and the automatic retry mechanism for `429` status codes, forms a multi-layered approach that makes the downloader both high-performance and respectful of the Internet Archive's infrastructure.
+
+</details>
+
+
+
 ## Installation
 
 The script is self-contained and requires only the `requests` library.
@@ -46,7 +73,6 @@ The script is self-contained and requires only the `requests` library.
     ```
 
 2.  **Install dependencies:**
-    *(Create a `requirements.txt` file containing the single line: `requests`)*
     ```bash
     pip install -r requirements.txt
     ```
