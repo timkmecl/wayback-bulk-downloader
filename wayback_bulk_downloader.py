@@ -1,4 +1,27 @@
 #!/usr/bin/env python3
+"""
+Wayback Machine Bulk Downloader (v2.6)
+
+A powerful CLI tool and importable Python module to bulk download pages
+from the Internet Archive's Wayback Machine.
+
+**Module Usage Example:**
+
+  from wayback_bulk_downloader import WaybackDownloader
+
+  # --- Example 1: Download a list of URLs ---
+  downloader = WaybackDownloader(output_dir="my_archive", threads=4)
+  urls = ["https://example.com", "https://wikipedia.org"]
+  results = downloader.download_from_list(urls)
+  print(f"List download finished: {results}")
+
+  # --- Example 2: Download using a template ---
+  template = "https://www.erowid.org/experiences/exp.php?ID={}"
+  params = [10931, 8633, 5880] # Can be strings or numbers
+  # Results will be in "my_archive/www.erowid.org_experiences_exp.php_ID="
+  results = downloader.download_from_template(template, params)
+  print(f"Template download finished: {results}")
+"""
 import requests
 import os
 import time
@@ -7,186 +30,208 @@ import argparse
 import sys
 import threading
 from queue import Queue
-from datetime import datetime
+import datetime
 
 # --- Default Configuration ---
 DEFAULT_OUTPUT_DIR = "wayback_downloads"
 DEFAULT_THREADS = 1
 DEFAULT_RETRIES = 3
-DEFAULT_DELAY = 1.0 # Default delay of 1 second between requests
-DEFAULT_USER_AGENT = "WaybackBulkDownloader/2.3 (Python/Requests; +https://github.com/)"
+DEFAULT_DELAY = 1.0
+DEFAULT_USER_AGENT = "WaybackBulkDownloader/2.6 (Python/Requests; +https://github.com/)"
 
-# --- Global Threading Primitives ---
-print_lock = threading.Lock()
-# For global rate limiting
-rate_limit_lock = threading.Lock()
-last_request_time = 0
-# For tracking progress
-success_count = 0
-fail_count = 0
-
-def tprint(text):
-    """A thread-safe print function."""
-    with print_lock:
-        print(text)
 
 def sanitize_filename(url_or_string):
     """Converts a string (URL or other) into a safe filename component."""
-    s = url_or_string
-    if s.endswith('/'):
-        s = s[:-1]
+    s = str(url_or_string) # Ensure it's a string
+    if s.endswith('/'): s = s[:-1]
     s = re.sub(r'^https?:\/\/', '', s)
     s = re.sub(r'[\\/:*?"<>|]', '_', s)
     return (s[:200]) if len(s) > 200 else s
 
-def download_worker(q, session, args, log_file_lock, log_file_path):
-    """The function run by each thread to process URLs from the queue."""
-    global success_count, fail_count, last_request_time
 
-    while not q.empty():
-        original_url, save_path = q.get()
-        timestamp_utc_str = datetime.utcnow().isoformat()
+class WaybackDownloader:
+    """
+    Manages a bulk download job from the Wayback Machine. Instantiate this
+    class with your desired configuration, then call one of the download
+    methods (`download_from_list`, `download_from_template`).
+    """
+    def __init__(self, output_dir=DEFAULT_OUTPUT_DIR, threads=DEFAULT_THREADS,
+                 delay=DEFAULT_DELAY, retries=DEFAULT_RETRIES,
+                 skip_existing=False, user_agent=DEFAULT_USER_AGENT,
+                 log_file=None, verbose=False, timestamp=None):
+        self.output_dir = output_dir
+        self.threads = threads
+        self.delay = delay
+        self.retries = retries
+        self.skip_existing = skip_existing
+        self.user_agent = user_agent
+        self.log_file = log_file
+        self.verbose = verbose
+        self.timestamp = timestamp
+        self.session = requests.Session()
+        self.session.headers.update({'User-Agent': self.user_agent})
+        # Internal state reset for each job
+        self._reset_state()
 
-        # --- Global Rate Limiting ---
-        if args.delay > 0:
-            with rate_limit_lock:
-                now = time.time()
-                elapsed = now - last_request_time
-                if elapsed < args.delay:
-                    time.sleep(args.delay - elapsed)
-                last_request_time = time.time()
-        # --- End Rate Limiting ---
+    def _reset_state(self):
+        """Resets the queue and counters for a new download job."""
+        self.q = Queue()
+        self.rate_limit_lock = threading.Lock()
+        self.log_file_lock = threading.Lock() if self.log_file else None
+        self.last_request_time = 0
+        self.success_count = 0
+        self.fail_count = 0
+        self.skipped_count = 0
 
-        if args.timestamp:
-            wayback_url = f"https://web.archive.org/web/{args.timestamp}/{original_url}"
-        else:
-            wayback_url = f"https://web.archive.org/web/{original_url}"
+    def download_url(self, url, on_progress=None):
+        """Convenience method to download a single URL."""
+        return self.download_from_list([url], on_progress)
 
-        if args.verbose:
-            tprint(f"  -> Thread {threading.get_ident()}: Requesting {wayback_url}")
-        
-        status, final_url, error_msg = "FAIL", "", "Unknown error"
-        
-        for attempt in range(args.retries):
-            try:
-                response = session.get(wayback_url, timeout=45)
-                response.raise_for_status()
-                if "Wayback Machine has not archived that URL." in response.text:
-                    error_msg = "No archive found"
-                    tprint(f"  -> No archive found for: {original_url}")
-                    break
-
-                with open(save_path, 'wb') as f: f.write(response.content)
-                status, final_url, error_msg = "SUCCESS", response.url, ""
-                if args.verbose: tprint(f"  -> Redirected to: {final_url}")
-                tprint(f"  -> Successfully saved to: {save_path}")
-                break
-
-            except requests.exceptions.HTTPError as e:
-                error_msg = str(e)
-                if e.response.status_code == 429:
-                    retry_delay = 5 * (attempt + 1)
-                    tprint(f"  -> Rate limit hit for {original_url}. Retrying in {retry_delay}s...")
-                    time.sleep(retry_delay)
-                    continue
-                else:
-                    tprint(f"  -> HTTP Error for {original_url}: {e}"); break
-            except requests.exceptions.RequestException as e:
-                error_msg = str(e); tprint(f"  -> Network error for {original_url}: {e}"); break
-        
-        with print_lock:
-            if status == "SUCCESS": success_count += 1
-            else: fail_count += 1
-        
-        if log_file_path:
-            with log_file_lock:
-                with open(log_file_path, 'a', encoding='utf-8') as lf:
-                    lf.write(f'"{timestamp_utc_str}","{original_url}","{final_url}","{status}","{save_path}","{error_msg}"\n')
-        q.task_done()
-
-def main(args):
-    """Main execution function."""
-    global last_request_time
-    last_request_time = time.time()
-    
-    jobs = []
-    mode_description = ""
-    
-    if args.template and args.params:
-        mode_description = f"Template: {args.template}, Params: {args.params}"
-        subdir_name = sanitize_filename(args.template.replace('{}', ''))
-        job_output_dir = os.path.join(args.output_dir, subdir_name)
-        os.makedirs(job_output_dir, exist_ok=True)
-        try:
-            with open(args.params, 'r') as f: params = [line.strip() for line in f if line.strip()]
-            for param in params:
-                if re.search(r'[\\/:*?"<>|]', param):
-                    tprint(f"Warning: Skipping invalid parameter '{param}' (contains illegal filename characters).")
-                    continue
-                full_url = args.template.format(param)
-                filename = f"{param}.html"
-                save_path = os.path.join(job_output_dir, filename)
-                jobs.append((full_url, save_path))
-        except FileNotFoundError: print(f"Error: Parameter file not found at '{args.params}'"); sys.exit(1)
-    else:
-        urls_to_process = []
-        if args.url: urls_to_process.append(args.url); mode_description = f"Single URL: {args.url}"
-        elif args.list:
-            mode_description = f"URL List: {args.list}"
-            try:
-                with open(args.list, 'r') as f: urls_to_process = [line.strip() for line in f if line.strip()]
-            except FileNotFoundError: print(f"Error: URL list file not found at '{args.list}'"); sys.exit(1)
-        for url in urls_to_process:
-            ts_suffix = f"_{args.timestamp}" if args.timestamp else ''
-            filename = sanitize_filename(url) + ts_suffix + ".html"
-            save_path = os.path.join(args.output_dir, filename)
+    def download_from_list(self, url_list, on_progress=None):
+        """
+        Prepares and runs a download job from a list of URLs.
+        Args:
+            url_list (list): A list of URL strings to download.
+            on_progress (callable, optional): Callback function for progress updates.
+        Returns:
+            dict: A summary of the download results.
+        """
+        self._reset_state()
+        jobs = []
+        for url in url_list:
+            ts_suffix = f"_{self.timestamp}" if self.timestamp else ''
+            save_path = os.path.join(self.output_dir, sanitize_filename(url) + ts_suffix + ".html")
             jobs.append((url, save_path))
+        return self._run_download_job(jobs, on_progress)
 
-    session = requests.Session()
-    session.headers.update({'User-Agent': args.user_agent})
-    
-    log_file_lock = threading.Lock() if args.log else None
-    if args.log:
-        with open(args.log, 'w', encoding='utf-8') as lf:
-            lf.write("download_timestamp_utc,original_url,final_url,status,local_path,error_message\n")
+    def download_from_template(self, template_url, params_list, on_progress=None):
+        """
+        Prepares and runs a download job from a URL template and a list of parameters.
+        Files will be saved in a subdirectory named after the template.
+        Args:
+            template_url (str): A URL string with a placeholder '{}'.
+            params_list (list): A list of strings or numbers to insert into the template.
+            on_progress (callable, optional): Callback function for progress updates.
+        Returns:
+            dict: A summary of the download results.
+        """
+        self._reset_state()
+        jobs = []
+        subdir_name = sanitize_filename(template_url.replace('{}', ''))
+        job_output_dir = os.path.join(self.output_dir, subdir_name)
+        
+        for param in params_list:
+            param_str = str(param)
+            if re.search(r'[\\/:*?"<>|]', param_str):
+                print(f"Warning: Skipping invalid parameter '{param_str}' (contains illegal filename characters).")
+                continue
+            full_url = template_url.format(param)
+            save_path = os.path.join(job_output_dir, f"{param_str}.html")
+            jobs.append((full_url, save_path))
+        return self._run_download_job(jobs, on_progress, job_output_dir)
 
-    q = Queue()
-    skipped_count = 0
-    for url, path in jobs:
-        if args.skip_existing and os.path.exists(path):
-            tprint(f"  -> Skipping existing file: {path}"); skipped_count += 1; continue
-        q.put((url, path))
+    def _run_download_job(self, jobs, on_progress=None, job_output_dir=None):
+        """Internal method to execute a prepared list of download jobs."""
+        output_dir = job_output_dir or self.output_dir
+        os.makedirs(output_dir, exist_ok=True)
 
-    print("--- Wayback Machine Bulk Downloader ---")
-    print(f"Mode:                  {mode_description}")
-    print(f"URLs to download:      {q.qsize()}")
-    print(f"URLs skipped:          {skipped_count}")
-    print(f"Output directory:      {args.output_dir}")
-    print(f"Timestamp:             {'Latest available' if not args.timestamp else args.timestamp}")
-    print(f"Concurrent threads:    {args.threads}")
-    print(f"Delay between requests: {args.delay}s")
-    if args.log: print(f"Log file:              {args.log}")
-    print("---------------------------------------\n")
-    
-    if q.empty(): print("No new URLs to download. Exiting."); return
+        if self.log_file:
+            with open(self.log_file, 'w', encoding='utf-8') as lf:
+                lf.write("download_timestamp_utc,original_url,final_url,status,local_path,error_message\n")
 
-    threads = []
-    for _ in range(args.threads):
-        thread = threading.Thread(target=download_worker, args=(q, session, args, log_file_lock, args.log))
-        thread.daemon = True; thread.start(); threads.append(thread)
-    q.join(); session.close()
+        for url, path in jobs:
+            if self.skip_existing and os.path.exists(path):
+                self.skipped_count += 1
+                if on_progress:
+                    on_progress({
+                        'timestamp_utc': datetime.datetime.now(datetime.UTC).isoformat(),
+                        'original_url': url, 'final_url': '', 'status': 'SKIPPED',
+                        'save_path': path, 'error_message': 'File already exists'
+                    })
+                continue
+            self.q.put((url, path))
+        
+        self.last_request_time = time.time()
+        
+        if self.q.empty():
+            return {'success': 0, 'failed': 0, 'skipped': self.skipped_count, 'total': len(jobs)}
 
-    print("\n--- Download Complete ---")
-    print(f"Successfully downloaded: {success_count}")
-    print(f"Failed to download:      {fail_count}")
-    print(f"Skipped (already exist): {skipped_count}")
-    print("-------------------------")
+        threads = []
+        for _ in range(self.threads):
+            thread = threading.Thread(target=self._download_worker, args=(on_progress,))
+            thread.daemon = True; thread.start(); threads.append(thread)
+        self.q.join()
+        self.session.close()
 
-if __name__ == "__main__":
+        return {
+            'success': self.success_count, 'failed': self.fail_count,
+            'skipped': self.skipped_count, 'total': len(jobs)
+        }
+
+    def _download_worker(self, on_progress):
+        # This method remains the same as v2.5
+        while not self.q.empty():
+            original_url, save_path = self.q.get()
+            if self.delay > 0:
+                with self.rate_limit_lock:
+                    now = time.time()
+                    elapsed = now - self.last_request_time
+                    if elapsed < self.delay: time.sleep(self.delay - elapsed)
+                    self.last_request_time = time.time()
+            ts_part = f"{self.timestamp}/" if self.timestamp else ""
+            wayback_url = f"https://web.archive.org/web/{ts_part}{original_url}"
+            if self.verbose: self._tprint(f"  -> Thread {threading.get_ident()}: Requesting {wayback_url}")
+            status, final_url, error_msg = "FAIL", "", "Unknown error"
+            for attempt in range(self.retries):
+                try:
+                    response = self.session.get(wayback_url, timeout=45)
+                    response.raise_for_status()
+                    if "Wayback Machine has not archived that URL." in response.text:
+                        error_msg = "No archive found"; break
+                    with open(save_path, 'wb') as f: f.write(response.content)
+                    status, final_url, error_msg = "SUCCESS", response.url, ""
+                    break
+                except requests.exceptions.HTTPError as e:
+                    error_msg = str(e)
+                    if e.response.status_code == 429:
+                        retry_delay = 5 * (attempt + 1)
+                        if self.verbose: self._tprint(f"  -> Rate limit hit for {original_url}. Retrying in {retry_delay}s...")
+                        time.sleep(retry_delay); continue
+                    else: break
+                except requests.exceptions.RequestException as e: error_msg = str(e); break
+            result_info = {
+                'timestamp_utc': datetime.datetime.now(datetime.UTC).isoformat(),
+                'original_url': original_url, 'final_url': final_url,
+                'status': status, 'save_path': save_path,
+                'error_message': error_msg
+            }
+            if status == "SUCCESS": self.success_count += 1
+            else: self.fail_count += 1
+            if self.log_file: self._log_to_file(result_info)
+            if on_progress: on_progress(result_info)
+            self.q.task_done()
+
+    def _log_to_file(self, result):
+        with self.log_file_lock:
+            with open(self.log_file, 'a', encoding='utf-8') as lf:
+                lf.write(f'"{result["timestamp_utc"]}","{result["original_url"]}",'
+                         f'"{result["final_url"]}","{result["status"]}",'
+                         f'"{result["save_path"]}","{result["error_message"]}"\n')
+    @staticmethod
+    def _tprint(text):
+        # A simple static print method for internal verbose use
+        print(text)
+
+# ==============================================================================
+# CLI - Command Line Interface Section
+# ==============================================================================
+def main_cli():
+    """Parses arguments and runs the downloader for command-line usage."""
     parser = argparse.ArgumentParser(
         description="A powerful CLI tool to bulk download pages from the Wayback Machine.",
         formatter_class=argparse.RawTextHelpFormatter
     )
+    # ... (argparse setup is unchanged) ...
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("-u", "--url", help="Mode 1: A single URL to download.")
     group.add_argument("-l", "--list", help="Mode 2: Path to a text file with URLs (one per line).")
@@ -204,4 +249,43 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if (args.template and not args.params) or (not args.template and args.params):
         parser.error("--template and --params must be used together.")
-    main(args)
+
+    def cli_progress_handler(result):
+        if result['status'] == 'SUCCESS': print(f"  -> Successfully saved to: {result['save_path']}")
+        elif result['status'] == 'SKIPPED': print(f"  -> Skipping existing file: {result['save_path']}")
+        else: print(f"  -> FAILED to download {result['original_url']} ({result['error_message']})")
+
+    downloader = WaybackDownloader(
+        output_dir=args.output_dir, threads=args.threads, delay=args.delay,
+        retries=args.retries, skip_existing=args.skip_existing,
+        user_agent=args.user_agent, log_file=args.log,
+        verbose=args.verbose, timestamp=args.timestamp
+    )
+    
+    print("--- Wayback Machine Bulk Downloader ---")
+    
+    results = {}
+    if args.url:
+        print(f"Mode:                  Single URL: {args.url}")
+        results = downloader.download_url(args.url, on_progress=cli_progress_handler)
+    elif args.list:
+        print(f"Mode:                  URL List: {args.list}")
+        try:
+            with open(args.list, 'r') as f: urls = [line.strip() for line in f if line.strip()]
+            results = downloader.download_from_list(urls, on_progress=cli_progress_handler)
+        except FileNotFoundError: print(f"Error: URL list file not found at '{args.list}'"); sys.exit(1)
+    elif args.template and args.params:
+        print(f"Mode:                  Template: {args.template}")
+        try:
+            with open(args.params, 'r') as f: params = [line.strip() for line in f if line.strip()]
+            results = downloader.download_from_template(args.template, params, on_progress=cli_progress_handler)
+        except FileNotFoundError: print(f"Error: Parameter file not found at '{args.params}'"); sys.exit(1)
+        
+    print("\n--- Download Complete ---")
+    print(f"Successfully downloaded: {results.get('success', 0)}")
+    print(f"Failed to download:      {results.get('failed', 0)}")
+    print(f"Skipped (already exist): {results.get('skipped', 0)}")
+    print("-------------------------")
+
+if __name__ == "__main__":
+    main_cli()
