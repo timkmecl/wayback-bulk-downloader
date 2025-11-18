@@ -7,13 +7,14 @@ import argparse
 import sys
 import threading
 from queue import Queue
+from datetime import datetime
 
 # --- Default Configuration ---
 DEFAULT_OUTPUT_DIR = "wayback_downloads"
 DEFAULT_DELAY = 1.0
 DEFAULT_RETRIES = 3
-DEFAULT_THREADS = 4
-DEFAULT_USER_AGENT = "WaybackBulkDownloader/1.0 (Python/Requests; +https://github.com/)"
+DEFAULT_THREADS = 1
+DEFAULT_USER_AGENT = "WaybackBulkDownloader/2.1 (Python/Requests; +https://github.com/)"
 
 # Thread-safe print and counters
 print_lock = threading.Lock()
@@ -40,6 +41,8 @@ def download_worker(q, session, args, log_file_lock, log_file_path):
     while not q.empty():
         original_url, save_path = q.get()
         
+        # Get the current time in UTC for consistent logging
+        timestamp_utc_str = datetime.utcnow().isoformat()
         # Build the correct Wayback Machine URL
         if args.timestamp:
             wayback_url = f"https://web.archive.org/web/{args.timestamp}/{original_url}"
@@ -98,7 +101,7 @@ def download_worker(q, session, args, log_file_lock, log_file_path):
         if log_file_path:
             with log_file_lock:
                 with open(log_file_path, 'a', encoding='utf-8') as lf:
-                    lf.write(f'"{original_url}","{final_url}","{status}","{save_path}","{error_msg}"\n')
+                    lf.write(f'"{timestamp_utc_str}","{original_url}","{final_url}","{status}","{save_path}","{error_msg}"\n')
 
         q.task_done()
 
@@ -129,7 +132,7 @@ def main(args):
     log_file_lock = threading.Lock() if args.log else None
     if args.log:
         with open(args.log, 'w', encoding='utf-8') as lf:
-            lf.write("original_url,final_url,status,local_path,error_message\n")
+            lf.write("download_timestamp_utc,original_url,final_url,status,local_path,error_message\n")
 
     # 4. Populate queue with jobs
     q = Queue()
@@ -172,7 +175,7 @@ def main(args):
         thread.start()
         threads.append(thread)
 
-    q.join() # Block until all tasks are done
+    q.join()
     session.close()
 
     # 7. Final Report
