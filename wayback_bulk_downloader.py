@@ -16,9 +16,9 @@ from the Internet Archive's Wayback Machine.
   print(f"Job finished: {results}")
 
   # --- Example 2: Download using a template ---
-  template = "https://www.erowid.org/experiences/exp.php?ID={}"
-  params = [10931, 8633, 5880] # Can be strings or numbers
-  # Results will be in "my_archive/www.erowid.org_experiences_exp.php_ID="
+  template = "https://en.wikipedia.org/wiki/{}"
+  params = ["Python", "Internet_Archive"] # Can be strings or numbers
+  # Results will be in "my_archive/en.wikipedia.org_wiki_Python" etc.
   results = downloader.download_from_template(template, params)
   print(f"Template download finished: {results}")
 """
@@ -30,14 +30,15 @@ import argparse
 import sys
 import threading
 from queue import Queue
-import datetime
+from datetime import datetime, timezone
 
 # --- Default Configuration ---
 DEFAULT_OUTPUT_DIR = "wayback_downloads"
 DEFAULT_THREADS = 1
 DEFAULT_RETRIES = 3
 DEFAULT_DELAY = 1.0
-DEFAULT_USER_AGENT = "WaybackBulkDownloader/2.7 (Python/Requests; +https://github.com/)"
+DEFAULT_TIMEOUT = 45
+DEFAULT_USER_AGENT = "WaybackBulkDownloader/2.7 (Python/Requests; +https://github.com/timkmecl/wayback-bulk-downloader)"
 
 
 def sanitize_filename(url_or_string):
@@ -56,13 +57,14 @@ class WaybackDownloader:
     methods (`download_from_list`, `download_from_template`).
     """
     def __init__(self, output_dir=DEFAULT_OUTPUT_DIR, threads=DEFAULT_THREADS,
-                 delay=DEFAULT_DELAY, retries=DEFAULT_RETRIES,
+                 delay=DEFAULT_DELAY, retries=DEFAULT_RETRIES, timeout=DEFAULT_TIMEOUT,
                  skip_existing=False, user_agent=DEFAULT_USER_AGENT,
                  log_file=None, verbose=False, timestamp=None, show_progress=False):
         self.output_dir = output_dir
         self.threads = threads
         self.delay = delay
         self.retries = retries
+        self.timeout = timeout
         self.skip_existing = skip_existing
         self.user_agent = user_agent
         self.log_file = log_file
@@ -149,7 +151,7 @@ class WaybackDownloader:
                 self.skipped_count += 1
                 if final_progress_callback:
                     final_progress_callback({
-                        'timestamp_utc': datetime.datetime.now(datetime.UTC).isoformat(),
+                        'timestamp_utc': datetime.now(timezone.utc).isoformat(),
                         'original_url': url, 'final_url': '', 'status': 'SKIPPED',
                         'save_path': path, 'error_message': 'File already exists'
                     })
@@ -176,41 +178,72 @@ class WaybackDownloader:
     def _download_worker(self, on_progress):
         while not self.q.empty():
             original_url, save_path = self.q.get()
+            
+            # Optimized rate limiting: Sleep OUTSIDE the lock
+            sleep_time = 0
             if self.delay > 0:
                 with self.rate_limit_lock:
                     now = time.time()
                     elapsed = now - self.last_request_time
-                    if elapsed < self.delay: time.sleep(self.delay - elapsed)
-                    self.last_request_time = time.time()
+                    if elapsed < self.delay:
+                        sleep_time = self.delay - elapsed
+                        self.last_request_time = now + sleep_time
+                    else:
+                        self.last_request_time = now
+            
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+
             ts_part = f"{self.timestamp}/" if self.timestamp else ""
             wayback_url = f"https://web.archive.org/web/{ts_part}{original_url}"
             if self.verbose: self._tprint(f"  -> Thread {threading.get_ident()}: Requesting {wayback_url}")
+            
             status, final_url, error_msg = "FAIL", "", "Unknown error"
             for attempt in range(self.retries):
                 try:
-                    response = self.session.get(wayback_url, timeout=45)
+                    response = self.session.get(wayback_url, timeout=self.timeout)
                     response.raise_for_status()
+                    
                     if "Wayback Machine has not archived that URL." in response.text:
-                        error_msg = "No archive found"; break
-                    with open(save_path, 'wb') as f: f.write(response.content)
-                    status, final_url, error_msg = "SUCCESS", response.url, ""
-                    break
+                        error_msg = "No archive found"
+                        break
+                    
+                    # Robustness: Wrap file I/O
+                    try:
+                        with open(save_path, 'wb') as f:
+                            f.write(response.content)
+                        status, final_url, error_msg = "SUCCESS", response.url, ""
+                        break
+                    except (OSError, IOError) as e:
+                        error_msg = f"File Write Error: {e}"
+                        break
+                        
                 except requests.exceptions.HTTPError as e:
                     error_msg = str(e)
                     if e.response.status_code == 429:
                         retry_delay = 5 * (attempt + 1)
                         if self.verbose: self._tprint(f"  -> Rate limit hit for {original_url}. Retrying in {retry_delay}s...")
-                        time.sleep(retry_delay); continue
-                    else: break
-                except requests.exceptions.RequestException as e: error_msg = str(e); break
+                        time.sleep(retry_delay)
+                        continue
+                    else:
+                        break
+                except requests.exceptions.RequestException as e:
+                    error_msg = str(e)
+                    break
+                except Exception as e:
+                    error_msg = f"Unexpected Error: {e}"
+                    break
+
             result_info = {
-                'timestamp_utc': datetime.datetime.now(datetime.UTC).isoformat(),
+                'timestamp_utc': datetime.now(timezone.utc).isoformat(),
                 'original_url': original_url, 'final_url': final_url,
                 'status': status, 'save_path': save_path,
                 'error_message': error_msg
             }
+            
             if status == "SUCCESS": self.success_count += 1
             else: self.fail_count += 1
+            
             if self.log_file: self._log_to_file(result_info)
             if on_progress: on_progress(result_info)
             self.q.task_done()
@@ -235,6 +268,14 @@ class WaybackDownloader:
 # ==============================================================================
 # CLI - Command Line Interface Section
 # ==============================================================================
+def _read_lines_from_file(filepath):
+    """Reads all non-empty, stripped lines from a text file."""
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            return [line.strip() for line in f if line.strip()]
+    except FileNotFoundError:
+        print(f"Error: Input file not found at '{filepath}'"); sys.exit(1)
+
 def main_cli():
     """Parses arguments and runs the downloader for command-line usage."""
     parser = argparse.ArgumentParser(
@@ -278,16 +319,12 @@ def main_cli():
         results = downloader.download_url(args.url)
     elif args.list:
         print(f"Mode:                  URL List: {args.list}")
-        try:
-            with open(args.list, 'r') as f: urls = [line.strip() for line in f if line.strip()]
-            results = downloader.download_from_list(urls)
-        except FileNotFoundError: print(f"Error: URL list file not found at '{args.list}'"); sys.exit(1)
+        urls = _read_lines_from_file(args.list)
+        results = downloader.download_from_list(urls)
     elif args.template and args.params:
         print(f"Mode:                  Template: {args.template}")
-        try:
-            with open(args.params, 'r') as f: params = [line.strip() for line in f if line.strip()]
-            results = downloader.download_from_template(args.template, params)
-        except FileNotFoundError: print(f"Error: Parameter file not found at '{args.params}'"); sys.exit(1)
+        params = _read_lines_from_file(args.params)
+        results = downloader.download_from_template(args.template, params)
         
     print("\n--- Download Complete ---")
     print(f"Successfully downloaded: {results.get('success', 0)}")

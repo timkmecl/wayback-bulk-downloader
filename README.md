@@ -7,33 +7,7 @@ A powerful and flexible CLI tool and Python module to bulk download pages from t
 
 This tool is designed for efficiency and politeness, incorporating features like concurrent downloads, rate limiting, automatic retries, and detailed logging. It can be used directly from the command line for archival tasks or imported into your own Python projects for programmatic access.
 
-## Table of Contents
 
--   [Key Features](#key-features)
--   [Installation](#installation)
--   [Usage (Command-Line)](#usage-command-line)
--   [Usage (as a Python Module)](#usage-as-a-python-module)
--   [Command-Line Options](#command-line-options)
--   [API Reference](#api-reference)
-
----
-
-## Key Features
-
--   **Multiple Download Modes:**
-    -   Download a single URL.
-    -   Process a list of URLs from a text file.
-    -   Use a URL template and a list of parameters to download series of related pages (e.g., articles, comics, user profiles).
--   **High Performance:** Download multiple URLs in parallel using concurrent threads.
--   **Polite & Robust:**
-    -   Configurable delay between requests to avoid overwhelming servers.
-    -   Automatic retries with exponential backoff when rate-limited (HTTP 429).
--   **Resume Support:** Automatically skips files that have already been downloaded, allowing you to resume interrupted jobs.
--   **Detailed Logging:** Generate a CSV log of every download attempt, including timestamps, final URLs, status, and error messages.
--   **Specific Timestamps:** Fetch the latest available version of a page or specify a precise timestamp (e.g., `20150101`) for point-in-time recovery.
--   **Dual Use:**
-    -   A full-featured command-line interface (CLI) for direct use.
-    -   An importable Python module (`WaybackDownloader` class) with a simple API and built-in progress logging.
 
 <details>
 
@@ -59,6 +33,38 @@ This provides two major benefits:
 This connection pooling strategy, combined with the explicit `--delay` between requests and the automatic retry mechanism for `429` status codes, forms a multi-layered approach that makes the downloader both high-performance and respectful of the Internet Archive's infrastructure.
 
 </details>
+
+
+
+
+## Table of Contents
+
+-   [Key Features](#key-features)
+-   [Installation](#installation)
+-   [Usage (Command-Line)](#usage-command-line)
+-   [Command-Line Options](#command-line-options)
+-   [Usage (as a Python Module)](#usage-as-a-python-module)
+-   [API Reference](#api-reference)
+
+---
+
+## Key Features
+
+-   **Multiple Download Modes:**
+    -   Download a single URL.
+    -   Process a list of URLs from a text file.
+    -   Use a URL template and a list of parameters to download series of related pages (e.g., articles, comics, user profiles).
+-   **High Performance:** Download multiple URLs in parallel using concurrent threads.
+-   **Polite & Robust:**
+    -   Configurable delay between requests to avoid overwhelming servers.
+    -   Automatic retries with exponential backoff when rate-limited (HTTP 429).
+-   **Resume Support:** Automatically skips files that have already been downloaded, allowing you to resume interrupted jobs.
+-   **Detailed Logging:** Generate a CSV log of every download attempt, including timestamps, final URLs, status, and error messages.
+-   **Specific Timestamps:** Fetch the latest available version of a page or specify a precise timestamp (e.g., `20150101`) for point-in-time recovery.
+-   **Dual Use:**
+    -   A full-featured command-line interface (CLI) for direct use.
+    -   An importable Python module (`WaybackDownloader` class) with a simple API and built-in progress logging.
+
 
 
 
@@ -146,6 +152,32 @@ python3 wayback_bulk_downloader.py \
     -v
 ```
 
+
+
+## Command-Line Options
+
+| Option             | Alias | Description                                                                                             | Default                  |
+| ------------------ | ----- | ------------------------------------------------------------------------------------------------------- | ------------------------ |
+| `--url`            | `-u`  | **Mode 1:** A single URL to download.                                                                   | -                        |
+| `--list`           | `-l`  | **Mode 2:** Path to a text file with URLs.                                                              | -                        |
+| `--template`       |       | **Mode 3:** A URL template with a `{}` placeholder. Must be used with `--params`.                         | -                        |
+| `--params`         |       | Path to a text file with parameter values for template mode.                                            | -                        |
+| `--output-dir`     | `-o`  | Directory to save downloads.                                                                            | `wayback_downloads`      |
+| `--timestamp`      | `-t`  | Wayback Machine timestamp (e.g., `20150101`). If omitted, fetches the latest version.                    | `None` (latest)          |
+| `--threads`        |       | Number of concurrent download threads.                                                                  | `1`                      |
+| `--delay`          |       | Minimum time (in seconds) between requests across ALL threads.                                          | `1.0`                    |
+| `--retries`        |       | Number of retries on rate-limit errors (HTTP 429).                                                      | `3`                      |
+| `--skip-existing`  |       | Skip downloading if the output file already exists.                                                     | `False`                  |
+| `--log`            |       | Path to a CSV file to log all download attempts.                                                        | `None`                   |
+| `--verbose`        | `-v`  | Enable verbose output for debugging.                                                                    | `False`                  |
+| `--silent`         |       | Suppress real-time console progress updates.                                                            | `False`                  |
+| `--user-agent`     |       | Custom User-Agent string for requests.                                                                  | `WaybackBulkDownloader/2.7` |
+
+
+
+---
+
+
 ## Usage (as a Python Module)
 
 You can import the `WaybackDownloader` class to integrate it into your own projects.
@@ -211,26 +243,6 @@ urls = ["https://example.com", "https://not-a-real-site-12345.org"]
 downloader.download_from_list(urls, on_progress=my_progress_handler)
 ```
 
-## Command-Line Options
-
-| Option             | Alias | Description                                                                                             | Default                  |
-| ------------------ | ----- | ------------------------------------------------------------------------------------------------------- | ------------------------ |
-| `--url`            | `-u`  | **Mode 1:** A single URL to download.                                                                   | -                        |
-| `--list`           | `-l`  | **Mode 2:** Path to a text file with URLs.                                                              | -                        |
-| `--template`       |       | **Mode 3:** A URL template with a `{}` placeholder. Must be used with `--params`.                         | -                        |
-| `--params`         |       | Path to a text file with parameter values for template mode.                                            | -                        |
-| `--output-dir`     | `-o`  | Directory to save downloads.                                                                            | `wayback_downloads`      |
-| `--timestamp`      | `-t`  | Wayback Machine timestamp (e.g., `20150101`). If omitted, fetches the latest version.                    | `None` (latest)          |
-| `--threads`        |       | Number of concurrent download threads.                                                                  | `1`                      |
-| `--delay`          |       | Minimum time (in seconds) between requests across ALL threads.                                          | `1.0`                    |
-| `--retries`        |       | Number of retries on rate-limit errors (HTTP 429).                                                      | `3`                      |
-| `--skip-existing`  |       | Skip downloading if the output file already exists.                                                     | `False`                  |
-| `--log`            |       | Path to a CSV file to log all download attempts.                                                        | `None`                   |
-| `--verbose`        | `-v`  | Enable verbose output for debugging.                                                                    | `False`                  |
-| `--silent`         |       | Suppress real-time console progress updates.                                                            | `False`                  |
-| `--user-agent`     |       | Custom User-Agent string for requests.                                                                  | `WaybackBulkDownloader/2.7` |
-
-
 
 
 
@@ -273,6 +285,7 @@ downloader = WaybackDownloader(
 | `threads`       | `int`               | The number of concurrent download threads to use.                                                       | `1`                      |
 | `delay`         | `float`             | The minimum delay in seconds between requests across all threads.                                         | `1.0`                    |
 | `retries`       | `int`               | The number of times to retry a download if a rate-limit error (HTTP 429) is encountered.                | `3`                      |
+| `timeout`       | `int`               | The timeout in seconds for HTTP requests.                                                                | `45`                     |
 | `skip_existing` | `bool`              | If `True`, the downloader will skip any URL whose output file already exists.                             | `False`                  |
 | `user_agent`    | `str`               | The User-Agent string to use for all HTTP requests.                                                     | `WaybackBulkDownloader/2.7...` |
 | `log_file`      | `str`, `optional`   | If provided, the path to a CSV file where all download attempts will be logged.                         | `None`                   |
@@ -294,6 +307,15 @@ Downloads a collection of URLs from a Python list.
 **Returns:**
 
 -   `(dict)`: A dictionary summarizing the results of the job.
+    The dictionary contains the following keys:
+
+    | Key       | Type  | Description                                                                    |
+    | --------- | ----- | ------------------------------------------------------------------------------ |
+    | `success` | `int` | The number of URLs that were successfully downloaded.                            |
+    | `failed`  | `int` | The number of URLs that failed to download after all retries.                  |
+    | `skipped` | `int` | The number of URLs that were skipped because the output file already existed.    |
+    | `total`   | `int` | The total number of URLs that were initially provided for the job.               |
+
 
 ---
 
